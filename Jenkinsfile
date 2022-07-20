@@ -17,9 +17,9 @@ pipeline {
   // * MSTest: https://plugins.jenkins.io/mstest/
   parameters {
     // Parameters are only available after the first run. See https://issues.jenkins.io/browse/JENKINS-41929 for more details.
-    string(defaultValue: 'Spaces-1', description: '', name: 'SpaceId', trim: true)
-    string(defaultValue: 'RandomQuotes', description: '', name: 'ProjectName', trim: true)
-    string(defaultValue: 'Dev', description: '', name: 'EnvironmentName', trim: true)
+    string(defaultValue: 'Default', description: '', name: 'SpaceId', trim: true)
+    string(defaultValue: 'RandomQuotes-dotnet', description: '', name: 'ProjectName', trim: true)
+    string(defaultValue: 'Development', description: '', name: 'EnvironmentName', trim: true)
     string(defaultValue: 'Octopus', description: '', name: 'ServerId', trim: true)
   }
   agent none
