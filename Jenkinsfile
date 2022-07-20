@@ -24,11 +24,6 @@ pipeline {
   }
   agent none
   stages {
-    stage('Environment') {
-      steps {
-          echo "PATH = ${env.PATH}"
-      }
-    }
     stage('Checkout') {
       steps {
         // If this pipeline is saved as a Jenkinsfile in a git repo, the checkout stage can be deleted as
