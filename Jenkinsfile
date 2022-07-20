@@ -1,6 +1,3 @@
-library 'cb-days@master'
-def dotnetpodYaml = libraryResource 'podtemplates/dotnet/dotnet-core.yaml'
-def octopodYaml = libraryResource 'podtemplates/octopus-cli/octopus-cli-pod.yaml'
 pipeline {
   // The following pipeline provides an opinionated template you can customize for your own needs.
   // 
@@ -14,15 +11,14 @@ pipeline {
   // * Git: https://plugins.jenkins.io/git/
   // * Workflow Aggregator: https://plugins.jenkins.io/workflow-aggregator/
   // * Octopus Deploy: https://plugins.jenkins.io/octopusdeploy/.
-  // * MSTest: https://plugins.jenkins.io/mstest/
   parameters {
     // Parameters are only available after the first run. See https://issues.jenkins.io/browse/JENKINS-41929 for more details.
     string(defaultValue: 'Default', description: '', name: 'SpaceId', trim: true)
-    string(defaultValue: 'RandomQuotes-dotnet', description: '', name: 'ProjectName', trim: true)
+    string(defaultValue: 'RandomQuotes-node', description: '', name: 'ProjectName', trim: true)
     string(defaultValue: 'Development', description: '', name: 'EnvironmentName', trim: true)
     string(defaultValue: 'Octopus', description: '', name: 'ServerId', trim: true)
   }
-  agent none
+  agent 'any'
   stages {
     stage('Checkout') {
       steps {
@@ -33,7 +29,7 @@ pipeline {
               This is from the Jenkins "Global Variable Reference" documentation:
               SCM-specific variables such as GIT_COMMIT are not automatically defined as environment variables; rather you can use the return value of the checkout step.
             */
-            def checkoutVars = checkout([$class: 'GitSCM', branches: [[name: '*/master']], userRemoteConfigs: [[url: 'https://github.com/OctopusSamples/RandomQuotes.git']]])
+            def checkoutVars = checkout([$class: 'GitSCM', branches: [[name: '*/master']], userRemoteConfigs: [[url: 'https://github.com/OctopusSamples/RandomQuotes-JS.git']]])
             env.GIT_URL = checkoutVars.GIT_URL
             env.GIT_COMMIT = checkoutVars.GIT_COMMIT
             env.GIT_BRANCH = checkoutVars.GIT_BRANCH
@@ -41,62 +37,31 @@ pipeline {
       }
     }
     stage('Dependencies') {
-      agent {
-        kubernetes {
-          label 'dotnet-core'
-          yaml dotnetpodYaml
-       }
-      }
       steps {
-       container('dotnet-core') {
-        sh(script: 'dotnet restore')
+        sh(script: 'npm install')
         // Save the dependencies that went into this build into an artifact. This allows you to review any builds for vulnerabilities later on.
-        sh(script: 'dotnet list package > dependencies.txt')
+        sh(script: 'npm list --all > dependencies.txt')
         archiveArtifacts(artifacts: 'dependencies.txt', fingerprint: true)
         // List any dependency updates.
-        sh(script: 'dotnet list package --outdated > dependencieupdates.txt')
+        sh(script: 'npm outdated > dependencieupdates.txt || true')
         archiveArtifacts(artifacts: 'dependencieupdates.txt', fingerprint: true)
       }
     }
-    }
-    stage('Build') {
-      agent {
-        kubernetes {
-          label 'dotnet-core'
-          yaml dotnetpodYaml
-       }
-      }
-      steps {
-       container('dotnet-core') {
-        sh(script: 'dotnet build --configuration Release', returnStdout: true)
-      }
-    }
-    }
     stage('Test') {
-      agent {
-        kubernetes {
-          label 'dotnet-core'
-          yaml dotnetpodYaml
-       }
-      }
       steps {
-       container('dotnet-core') {
-        sh(script: 'dotnet test -l:trx')
-        mstest(testResultsFile: '**/*.trx', failOnError: false, keepLongStdio: true)
+        sh(script: 'npm test', returnStdout: true)
+        // The results should be processed and the pipeline
+        // passed or failed with a step like https://plugins.jenkins.io/junit/ or
+        // https://plugins.jenkins.io/xunit/ (depending on the report format). Dedicated
+        // test processing steps provide flexibility around test failure thresholds rather than
+        // simple pass/fail results.
+        // junit(testResults: 'report.xml', allowEmptyResults : true)
       }
     }
-    }
-    stage('Publish') {
-      agent {
-        kubernetes {
-          label 'dotnet-core'
-          yaml dotnetpodYaml
-       }
-      }
+    stage('Package') {
       steps {
         // Gitversion is available from https://github.com/GitTools/GitVersion/releases.
         // We attempt to run gitversion if the executable is available.
-       container('dotnet-core') {
         sh(script: 'which gitversion && gitversion /output buildserver || true')
         // Capture the git version as an environment variable, or use a default version if gitversion wasn't available.
         // https://gitversion.net/docs/reference/build-servers/jenkins
@@ -112,60 +77,34 @@ pipeline {
               env.VERSION_SEMVER = "1.0.0." + env.BUILD_NUMBER
             }
         }
-        sh(script: 'dotnet publish --configuration Release /p:AssemblyVersion=${VERSION_SEMVER}')
         script {
-            // Find published DLL files.
-            def files = findFiles(glob: '**/publish/*.dll')
-              .collect{it.path.substring(0, it.path.lastIndexOf("/"))}
-              .unique(false)
-            echo 'Found ' + files.size() + ' publish dirs'
-            files.each{echo it}
-            // Join the paths containing published application with colons.
-            env.PUBLISH_PATHS = files.collect{it}.join(':')
-            echo 'These paths are available from the PUBLISH_PATHS environment variable, separated by colons.'
-        }
-        script {
-            env.PUBLISH_PATHS.split(":").each {
-            	def packageId = "application"
-            	dir("${env.WORKSPACE}/${it}/../../../..") {
-            		 def projFiles = findFiles(glob: '*.csproj')
-            		 if (projFiles.size() != 0) packageId = projFiles[0].path.substring(0, projFiles[0].path.lastIndexOf("."))		
-            	}
-            	dir("${env.WORKSPACE}/${it}") {
-            		octopusPack(
-            			additionalArgs: '', 
-            			outputPath : "..",
-            			includePaths: "**",
-            			overwriteExisting: true, 
-            			packageFormat: 'zip', 
-            			packageId: packageId, 
-            			packageVersion: env.VERSION_SEMVER, 
-            			sourcePath: '', 
-            			toolId: 'Default', 
-            			verboseLogging: false)
-            	}
-            	dir("${env.WORKSPACE}/${it}/..") {
-            		def artifact = "${pwd()}/${packageId}.${env.VERSION_SEMVER}.zip"
-            		env.ARTIFACTS = artifact + ":" + env.ARTIFACTS
-            		echo "Generated artifact at ${artifact}"
-            	}
+            def sourcePath = "."
+            def outputPath = "."
+            
+            if (fileExists("build")) {
+            	sourcePath = "build"
+            	outputPath = ".."
             }
-            echo "Artifact paths have been saved in the ARTIFACTS environment variable"
+            
+            octopusPack(
+            	additionalArgs: '',
+            	sourcePath: sourcePath,
+            	outputPath : outputPath,
+            	includePaths: "**/*.html\n**/*.htm\n**/*.css\n**/*.js\n**/*.min\n**/*.map\n**/*.sql\n**/*.png\n**/*.jpg\n**/*.jpeg\n**/*.gif\n**/*.json\n**/*.env\n**/*.txt\n**/Procfile",
+            	overwriteExisting: true, 
+            	packageFormat: 'zip', 
+            	packageId: 'RandomQuotes-JS', 
+            	packageVersion: env.VERSION_SEMVER, 
+            	toolId: 'Default', 
+            	verboseLogging: false)
+            env.ARTIFACTS = "RandomQuotes-JS.${env.VERSION_SEMVER}.zip"
         }
       }
-    }
     }
     stage('Deployment') {
-      agent {
-        kubernetes {
-          label 'octo-cli'
-          yaml octopodYaml
-       }
-      }
       steps {
         // This stage assumes you perform the deployment with Octopus Deploy.
         // The steps shown below can be replaced with your own custom steps to deploy to other platforms if needed.
-       container('octo-cli') {
         octopusPushPackage(additionalArgs: '',
           packagePaths: env.ARTIFACTS.split(":").join("\n"),
           overwriteMode: 'OverwriteExisting',
@@ -219,5 +158,4 @@ pipeline {
       }
     }
   }
- }
 }
